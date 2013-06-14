@@ -43,6 +43,16 @@ def opt_parser():
 		action='store_true',
 		help='print raw bytes instead of an escaped string'
 	)
+
+	parser.add_argument(
+		'-d',
+		'--disassemble',
+		nargs='?',
+		metavar='0xBASE_ADDR',
+		help='also disassemble output opcodes (printed to stderr). assume a base address of BASE_ADDR (in hex) for disassembly. default: 0x08040000',
+		default=None,
+		const='0x080400000'
+	)
 	
 	return parser
 
@@ -56,7 +66,7 @@ lgr = logging.getLogger("asmops")
 
 def run(options):
 	global lgr
-	
+
 	if options.verbose >= 2:
 		lgr.setLevel(logging.DEBUG)
 	elif options.verbose == 1:
@@ -126,18 +136,52 @@ def run_assemble(options):
 				lgr.error("failed to extract opcodes from %r: %s" % (out_fpath, e))
 			
 			lgr.debug("got opcodes from %r" % out_fpath)
+			if options.raw:
+				print opcodes
+			else:
+				print "".join(map(
+					lambda b: "\\x%02x" % ord(b),
+					opcodes
+				))
+			
+			sys.stdout.flush()
+			
+			if options.disassemble is not None:
+				try:
+					dec_type = distorm_dec_type(eo)
+				except AsmOPsErr as e:
+					lgr.error("cannot print disassembly for output opcodes " + \
+								"because distorm does not support " + \
+								"%r architecture" % (e))
+					dec_type = None
 
+				if dec_type:
+					print_disassembly(opcodes, int(options.disassemble, 16), dec_type)
+					
 	except IOError as e:
 		lgr.error("failed to find gas output file: %s" % e)
 		exit(1)
 
-	if options.raw:
-		print opcodes
+def print_disassembly(opcodes, base_addr, dec_type):
+	if dec_type == distorm3.Decode64Bits:
+		addr_fmt = "%160x:"
 	else:
-		print "".join(map(
-			lambda b: "\\x%02x" % ord(b),
-			opcodes
+		addr_fmt = "%08x:"
+
+	for ins in distorm3.Decode(base_addr, opcodes, dec_type):
+		sys.stderr.write( "  %-16s%3s%-16s%2s%s\n" % (
+			(addr_fmt % ins[0]), "", ins[3], "", ins[2]
 		))
+
+def distorm_dec_type(elf_o):
+	arch = elf_o.get_machine_arch()
+	if arch == "x64":
+		return distorm3.Decode64Bits
+	elif arch == "x86":
+		return distorm3.Decode32Bits
+
+	raise AsmOPsErr(arch)
+		
 
 SYMBOL_NAME = "_start"
 
