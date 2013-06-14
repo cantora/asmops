@@ -37,6 +37,12 @@ def opt_parser():
 		metavar='ASSEMBLY',
 		help='use instructions passed to this flag instead of reading from file.',
 	)
+
+	parser.add_argument(
+		'--raw',
+		action='store_true',
+		help='print raw bytes instead of an escaped string'
+	)
 	
 	return parser
 
@@ -70,7 +76,11 @@ def run_assemble(options):
 	if not options.asm is None:
 		asm_code = options.asm
 	else:
-		asm_code = options.file.read()
+		if not options.file:
+			sys.stdout.write("using stdin as input\n")
+			asm_code = sys.stdin.read()
+		else:
+			asm_code = options.file.read()
 	
 	if len(asm_code) < 1:
 		raise AsmOPsErr("input assembly code is empty!")
@@ -121,7 +131,13 @@ def run_assemble(options):
 		lgr.error("failed to find gas output file: %s" % e)
 		exit(1)
 
-	print "opcodes: %r" % opcodes
+	if options.raw:
+		print opcodes
+	else:
+		print "".join(map(
+			lambda b: "\\x%02x" % ord(b),
+			opcodes
+		))
 
 SYMBOL_NAME = "_start"
 
