@@ -1,0 +1,191 @@
+#!/usr/bin/env python
+
+import argparse
+import sys
+import os
+import os.path
+import logging
+import subprocess
+import re
+
+import distorm3
+from elftools.elf.elffile import ELFFile
+import elftools
+
+def opt_parser():
+	parser = argparse.ArgumentParser(description='print assembly op codes')
+
+	parser.add_argument(
+		'file', 
+		nargs='?', 
+		type=argparse.FileType('r'),
+		help='file from which to get assembly instructions. if no file is given, stdin will be used',
+		default=False
+	)
+
+	parser.add_argument(
+		'-v', 
+		'--verbose', 
+		action='count', 
+		help='print debug output. repeat to increase verbosity.',
+		default=0
+	)
+
+	parser.add_argument(
+		'-a',
+		'--asm',
+		metavar='ASSEMBLY',
+		help='use instructions passed to this flag instead of reading from file.',
+	)
+	
+	return parser
+
+class AsmOPsErr(Exception):
+	pass
+
+class MissingOption(AsmOPsErr):
+	pass
+
+lgr = logging.getLogger("asmops")
+
+def run(options):
+	global lgr
+	
+	if options.verbose >= 2:
+		lgr.setLevel(logging.DEBUG)
+	elif options.verbose == 1:
+		lgr.setLevel(logging.INFO)
+	else:
+		lgr.setLevel(logging.ERROR)
+
+	ch = logging.StreamHandler()
+	ch.setLevel(lgr.level)
+	lgr.addHandler(ch)
+	
+	run_assemble(options)
+
+def run_assemble(options):
+	global lgr
+
+	if not options.asm is None:
+		asm_code = options.asm
+	else:
+		asm_code = options.file.read()
+	
+	if len(asm_code) < 1:
+		raise AsmOPsErr("input assembly code is empty!")
+
+	in_fpath = "/tmp/asmops-asm.s"
+	out_fpath = "/tmp/asmops-output"
+
+	lgr.debug("open input file %r" % in_fpath)
+	with open(in_fpath, "w") as f:
+		lgr.debug("write assembly program to %r" % in_fpath)
+		asm_pgm(f, asm_code)
+
+	try:
+		os.remove(out_fpath)
+	except OSError:
+		pass
+
+	gas = ["as", "--32", "-o", out_fpath, in_fpath]
+	lgr.debug("call gas: %s" % " ".join(gas))
+	try:
+		gas_output = subprocess.check_output(gas)
+	except CalledProcessError as e:
+		lgr.error("gas failed with output:\n%s" % (gas_output))
+		exit(1)
+
+	if len(gas_output.strip()) > 0:
+		lgr.debug("gas stdout: %s" % gas_output)
+	else:
+		lgr.debug("gas stdout was empty")
+
+	try:
+		with open(out_fpath, "r") as f:
+			lgr.debug("extract op codes from gas output file at %r" % out_fpath)
+			try:
+				eo = ELFFile(f)
+			except elftools.common.exceptions.ELFError as e:
+				lgr.error("failed to parse %r as elf file: %s" % (out_fpath, e))
+				exit(1)
+	
+			try:
+				opcodes = elf_extract_opcodes(eo)
+			except AsmOPsErr as e:
+				lgr.error("failed to extract opcodes from %r: %s" % (out_fpath, e))
+			
+			lgr.debug("got opcodes from %r" % out_fpath)
+
+	except IOError as e:
+		lgr.error("failed to find gas output file: %s" % e)
+		exit(1)
+
+	print "opcodes: %r" % opcodes
+
+SYMBOL_NAME = "_start"
+
+def elf_extract_opcodes(elf_o):
+	st = elf_o.get_section_by_name('.symtab')
+	if not st:
+		raise AsmOPsErr("failed to find symbol table in elf file")
+	
+	name = SYMBOL_NAME
+	name_s = None
+	for sym in st.iter_symbols():
+		if sym.name == name:
+			name_s = sym
+			break
+
+	if not name_s:
+		raise AsmOPsErr("failed to find %r in symbol table" % name)
+
+	text = elf_o.get_section_by_name('.text')
+	if not text:
+		raise AsmOPsErr("failed to find .text section in elf file")
+
+	offset = name_s['st_value']
+	size = name_s['st_size']
+	if size < 1:
+		raise AsmOPsErr("%r symbol is empty (size < 1)" % name)
+
+	data = text.data()
+	if len(data) < offset+size:
+		raise AsmOPsErr(
+			"size of .text (%d) is smaller than offset+size of %r(%d)" % (
+				len(data), name, offset+size
+			)
+		) 
+
+	return data[offset:offset+size]
+	
+def asm_pgm_prefix():
+	return \
+		".text\n\n" + \
+		(".globl %s\n" % (SYMBOL_NAME)) + \
+		(".type %s, @function\n" % (SYMBOL_NAME)) + \
+		("%s:\n" % (SYMBOL_NAME))
+
+def asm_pgm_suffix():
+	return "\n" + (".size %s, .-%s" % (SYMBOL_NAME, SYMBOL_NAME)) + "\n"
+
+def asm_pgm(io, asm_code):
+	
+	io.write(asm_pgm_prefix())
+	for ins in re.split('\s*;+\s*', asm_code.strip()):
+		if len(ins.strip()) > 0:
+			io.write("\t%s;\n" % ins)
+	io.write(asm_pgm_suffix())
+			
+if __name__ == "__main__":
+	opt_p = opt_parser()
+	options = opt_p.parse_args()
+
+	try:
+		run(options)
+	except AsmOPsErr as e:
+		print(e)
+		print("")
+		opt_p.print_help()
+		exit(1)
+
