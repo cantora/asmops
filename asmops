@@ -51,9 +51,16 @@ def opt_parser():
 		metavar='0xBASE_ADDR',
 		help='also disassemble output opcodes (printed to stderr). assume a base address of BASE_ADDR (in hex) for disassembly. default: 0x08040000',
 		default=None,
-		const='0x080400000'
+		const='0x080404000'
 	)
-	
+
+	parser.add_argument(
+		'--',
+		dest='gas_args',
+		nargs=argparse.REMAINDER,
+		help='all flags following this will be passed to gas.'
+	)
+
 	return parser
 
 class AsmOPsErr(Exception):
@@ -108,7 +115,10 @@ def run_assemble(options):
 	except OSError:
 		pass
 
-	gas = ["as", "--32", "-o", out_fpath, in_fpath]
+	gas = ["as"]
+	if options.gas_args:
+		gas += options.gas_args
+	gas += ["-o", out_fpath, in_fpath]
 	lgr.debug("call gas: %s" % " ".join(gas))
 	try:
 		gas_output = subprocess.check_output(gas)
@@ -164,12 +174,12 @@ def run_assemble(options):
 
 def print_disassembly(opcodes, base_addr, dec_type):
 	if dec_type == distorm3.Decode64Bits:
-		addr_fmt = "%160x:"
+		addr_fmt = "%016x:"
 	else:
 		addr_fmt = "%08x:"
 
 	for ins in distorm3.Decode(base_addr, opcodes, dec_type):
-		sys.stderr.write( "  %-16s%3s%-16s%2s%s\n" % (
+		sys.stderr.write("  %-16s%3s%-16s%2s%s\n" % (
 			(addr_fmt % ins[0]), "", ins[3], "", ins[2]
 		))
 
@@ -239,8 +249,21 @@ def asm_pgm(io, asm_code):
 			
 if __name__ == "__main__":
 	opt_p = opt_parser()
-	options = opt_p.parse_args()
+	
+	arg_split = None
+	av_len = len(sys.argv)
+	for i in range(1, av_len):
+		if sys.argv[i].strip() == '--':
+			arg_split = i
+			break
 
+	if arg_split and arg_split < (av_len-1):
+		gas_args = sys.argv[arg_split+1:]
+		options = opt_p.parse_args(sys.argv[1:i])
+		options.gas_args = gas_args
+	else:
+		options = opt_p.parse_args()
+	
 	try:
 		run(options)
 	except AsmOPsErr as e:
