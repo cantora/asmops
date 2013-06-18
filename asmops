@@ -12,6 +12,8 @@ import distorm3
 from elftools.elf.elffile import ELFFile
 import elftools
 
+DISASM_BASE_ADDR='0x080404000'
+
 def opt_parser():
 	parser = argparse.ArgumentParser(description='print assembly op codes')
 
@@ -19,7 +21,8 @@ def opt_parser():
 		'file', 
 		nargs='?', 
 		type=argparse.FileType('r'),
-		help='file from which to get assembly instructions. if no file is given, stdin will be used',
+		help='file from which to get assembly instructions. if no file is given, ' + \
+				'stdin will be used',
 		default=False
 	)
 
@@ -35,7 +38,18 @@ def opt_parser():
 		'-a',
 		'--asm',
 		metavar='ASSEMBLY',
-		help='use instructions passed to this flag instead of reading from file.',
+		help='use instructions passed to this flag instead of reading from file. ' + \
+				'if --bc ARCH is used, ASSEMBLY will be interpreted as byte codes, ' + \
+				'not mnemonics.'
+	)
+
+	parser.add_argument(
+		'--bc',
+		metavar='ARCH',
+		choices=['x86', 'x64'],
+		help='dont assemble anything. just disassemble ASSEMBLY (from -a) or ' + \
+				'disassemble the input file if -a is not given. the data will ' + \
+				'be disassembled using the base address given at -d.'
 	)
 
 	parser.add_argument(
@@ -49,9 +63,10 @@ def opt_parser():
 		'--disassemble',
 		nargs='?',
 		metavar='0xBASE_ADDR',
-		help='also disassemble output opcodes (printed to stderr). assume a base address of BASE_ADDR (in hex) for disassembly. default: 0x08040000',
+		help='also disassemble output opcodes (printed to stderr). assume a base ' + \
+				'address of BASE_ADDR (in hex) for disassembly. default: 0x08040000',
 		default=None,
-		const='0x080404000'
+		const=DISASM_BASE_ADDR
 	)
 
 	parser.add_argument(
@@ -84,20 +99,44 @@ def run(options):
 	ch = logging.StreamHandler()
 	ch.setLevel(lgr.level)
 	lgr.addHandler(ch)
-	
-	run_assemble(options)
-
-def run_assemble(options):
-	global lgr
 
 	if not options.asm is None:
-		asm_code = options.asm
+		input = options.asm
 	else:
 		if not options.file:
 			sys.stdout.write("using stdin as input\n")
-			asm_code = sys.stdin.read()
+			input = sys.stdin.read()
 		else:
-			asm_code = options.file.read()
+			input = options.file.read()
+
+	try:
+		if options.bc:
+			run_bc(input, options)	
+		else:
+			run_assemble(input, options)
+	except Exception as e:
+		sys.stderr.write("unknown exception %s. options: %r\n" % (e, options))
+		exit(1)
+
+def run_bc(input, options):
+
+	if len(input) < 1:
+		raise AsmOPsErr("input byte code is empty!")
+
+	if options.bc == 'x86':
+		arch_type = distorm3.Decode32Bits
+	elif options.bc == 'x64':
+		arch_type = distorm3.Decode64Bits
+	else:
+		raise AsmOPsErr("cannot disassemble %r architecture" % options.bc)
+
+	if not options.disassemble:
+		options.disassemble = DISASM_BASE_ADDR
+
+	print_disassembly(sys.stdout, input, int(options.disassemble, 16), arch_type)
+
+def run_assemble(asm_code, options):
+	global lgr
 	
 	if len(asm_code) < 1:
 		raise AsmOPsErr("input assembly code is empty!")
@@ -166,20 +205,20 @@ def run_assemble(options):
 					dec_type = None
 
 				if dec_type:
-					print_disassembly(opcodes, int(options.disassemble, 16), dec_type)
+					print_disassembly(sys.stderr, opcodes, int(options.disassemble, 16), dec_type)
 					
 	except IOError as e:
 		lgr.error("failed to find gas output file: %s" % e)
 		exit(1)
 
-def print_disassembly(opcodes, base_addr, dec_type):
+def print_disassembly(io, opcodes, base_addr, dec_type):
 	if dec_type == distorm3.Decode64Bits:
 		addr_fmt = "%016x:"
 	else:
 		addr_fmt = "%08x:"
 
 	for ins in distorm3.Decode(base_addr, opcodes, dec_type):
-		sys.stderr.write("  %-16s%3s%-16s%2s%s\n" % (
+		io.write("  %-16s%3s%-16s%2s%s\n" % (
 			(addr_fmt % ins[0]), "", ins[3], "", ins[2]
 		))
 
