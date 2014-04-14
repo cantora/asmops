@@ -1,0 +1,4 @@
+asmops
+======
+
+print assembly opcodes
